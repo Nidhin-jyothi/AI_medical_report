@@ -4,11 +4,12 @@ import whisper
 import spacy
 import os
 import datetime
-from tempfile import NamedTemporaryFile
+import tempfile
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.schema import HumanMessage
 from fpdf import FPDF
 from docx import Document
+from pydub import AudioSegment  # ✅ NEW
 
 # ---------- Caching models ----------
 
@@ -62,74 +63,73 @@ if pid:
         sex = st.radio("Sex", ("Male", "Female", "Other"))
         if st.button("Register Patient"):
             patient_db[pid] = {"name": name, "age": age, "sex": sex}
-            st.success(f"Patient {pid} registered successfully!")
+            st.success("Patient registered!")
 
 # ---------- Audio Upload ----------
 
-st.subheader("Upload Consultation Audio")
+st.subheader("Upload Audio Consultation")
 
-audio_file = st.file_uploader("Upload an audio file (wav, mp3, m4a)", type=["wav", "mp3", "m4a"])
+audio_file = st.file_uploader("Upload an audio file", type=["mp3", "wav", "m4a"])
 
 if audio_file is not None:
     st.audio(audio_file, format="audio/wav")
-
-    with NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-        tmp_file.write(audio_file.read())
-        tmp_file_path = tmp_file.name
+    
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp_path = tmp.name
+        
+        # Save uploaded audio properly
+        audio = AudioSegment.from_file(audio_file)
+        audio.export(tmp_path, format="wav")  # ✅ Always export as wav
 
     with st.spinner("Transcribing..."):
-        result = whisper_model.transcribe(tmp_file_path)
+        result = whisper_model.transcribe(tmp_path)
         transcription = result["text"]
 
     st.subheader("Transcription")
     st.write(transcription)
 
-    # ---------- Extract Medical Entities ----------
+    # ---------- NLP Processing ----------
 
-    with st.spinner("Extracting medical terms..."):
+    with st.spinner("Extracting key information..."):
         doc = nlp(transcription)
-        entities = [(ent.text, ent.label_) for ent in doc.ents]
 
-    st.subheader("Extracted Medical Entities")
-    for ent_text, ent_label in entities:
-        st.write(f"• {ent_text} ({ent_label})")
+        symptoms = [ent.text for ent in doc.ents if ent.label_ == "SYMPTOM"]
+        diseases = [ent.text for ent in doc.ents if ent.label_ == "DISEASE"]
+        medications = [ent.text for ent in doc.ents if ent.label_ == "DRUG"]
 
-    # ---------- Generate Medical Report ----------
+    st.subheader("Extracted Information")
+    st.write("**Symptoms:**", symptoms)
+    st.write("**Diseases:**", diseases)
+    st.write("**Medications:**", medications)
 
-    with st.spinner("Generating report..."):
-        response = llm.invoke([HumanMessage(content=f"Generate a detailed medical report based on the following consultation transcript:\n\n{transcription}")])
-        report_text = response.content
+    # ---------- LLM Summary ----------
 
-    st.subheader("Generated Medical Report")
-    st.write(report_text)
+    with st.spinner("Generating summary..."):
+        message = HumanMessage(content=f"Summarize the following patient consultation: {transcription}")
+        summary = llm([message]).content
 
-    # ---------- Download Report ----------
+    st.subheader("Consultation Summary")
+    st.write(summary)
 
-    def save_as_pdf(text, filename):
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("Arial", size=12)
-        for line in text.split('\n'):
-            pdf.multi_cell(0, 10, line)
-        pdf.output(filename)
+    # ---------- Report Export ----------
 
-    def save_as_docx(text, filename):
-        doc = Document()
-        for line in text.split('\n'):
-            doc.add_paragraph(line)
-        doc.save(filename)
+    export_format = st.selectbox("Export Report As", ["PDF", "Word (.docx)"])
 
-    st.subheader("Download Report")
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if st.button("Download PDF"):
-            with NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
-                save_as_pdf(report_text, tmp_pdf.name)
-                st.download_button("Download PDF", tmp_pdf.read(), file_name="medical_report.pdf")
-
-    with col2:
-        if st.button("Download Word"):
-            with NamedTemporaryFile(delete=False, suffix=".docx") as tmp_docx:
-                save_as_docx(report_text, tmp_docx.name)
-                st.download_button("Download Word", tmp_docx.read(), file_name="medical_report.docx")
+    if st.button("Download Report"):
+        if export_format == "PDF":
+            pdf = FPDF()
+            pdf.add_page()
+            pdf.set_font("Arial", size=12)
+            pdf.multi_cell(0, 10, summary)
+            pdf_path = os.path.join(tempfile.gettempdir(), "report.pdf")
+            pdf.output(pdf_path)
+            with open(pdf_path, "rb") as f:
+                st.download_button("Download PDF", f, file_name="patient_report.pdf")
+        else:
+            docx = Document()
+            docx.add_heading("Patient Consultation Summary", 0)
+            docx.add_paragraph(summary)
+            docx_path = os.path.join(tempfile.gettempdir(), "report.docx")
+            docx.save(docx_path)
+            with open(docx_path, "rb") as f:
+                st.download_button("Download Word Document", f, file_name="patient_report.docx")
