@@ -3,20 +3,19 @@ import torch
 import whisper
 import spacy
 import os
-import datetime
 import tempfile
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.schema import HumanMessage
 from fpdf import FPDF
 from docx import Document
-from pydub import AudioSegment  # ✅ NEW
+from pydub import AudioSegment
 
 # ---------- Caching models ----------
 
 @st.cache_resource
 def load_whisper_model():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    return whisper.load_model("small", device=device)  # small or tiny
+    return whisper.load_model("small", device=device)
 
 @st.cache_resource
 def load_spacy_model():
@@ -52,34 +51,38 @@ pid = st.text_input("Enter Patient ID (if existing) or leave blank to register a
 
 if pid:
     if pid in patient_db:
-        st.success(f"Patient {pid} found!")
-        patient = patient_db[pid]
-        st.write(f"**Name:** {patient['name']}")
-        st.write(f"**Age/Sex:** {patient['age']}/{patient['sex']}")
+        patient_info = patient_db[pid]
+        st.success(f"Patient {pid} found.")
+        st.write(patient_info)
     else:
-        st.warning("Patient ID not found. Please register the patient below.")
-        name = st.text_input("Patient Name")
-        age = st.number_input("Age", min_value=0, max_value=120, step=1)
-        sex = st.radio("Sex", ("Male", "Female", "Other"))
-        if st.button("Register Patient"):
-            patient_db[pid] = {"name": name, "age": age, "sex": sex}
-            st.success("Patient registered!")
+        st.warning("Patient ID not found. Please register.")
 
-# ---------- Audio Upload ----------
+else:
+    st.info("New patient registration")
+    name = st.text_input("Name")
+    age = st.number_input("Age", min_value=0, max_value=120)
+    gender = st.selectbox("Gender", ["Male", "Female", "Other"])
+    if st.button("Register Patient"):
+        if name:
+            new_pid = str(len(patient_db) + 1)
+            patient_db[new_pid] = {"name": name, "age": age, "gender": gender}
+            st.success(f"Patient registered successfully with ID: {new_pid}")
+        else:
+            st.error("Please enter the patient's name.")
 
-st.subheader("Upload Audio Consultation")
+# ---------- Audio Upload and Transcription ----------
 
-audio_file = st.file_uploader("Upload an audio file", type=["mp3", "wav", "m4a"])
+st.subheader("Upload Consultation Audio")
+
+audio_file = st.file_uploader("Upload Audio", type=["wav", "mp3", "m4a"])
 
 if audio_file is not None:
     st.audio(audio_file, format="audio/wav")
-    
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+
+    # Save uploaded file to temp location
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
         tmp_path = tmp.name
-        
-        # Save uploaded audio properly
-        audio = AudioSegment.from_file(audio_file)
-        audio.export(tmp_path, format="wav")  # ✅ Always export as wav
+        tmp.write(audio_file.read())  # ✅ properly write uploaded file content
 
     with st.spinner("Transcribing..."):
         result = whisper_model.transcribe(tmp_path)
@@ -88,48 +91,71 @@ if audio_file is not None:
     st.subheader("Transcription")
     st.write(transcription)
 
-    # ---------- NLP Processing ----------
+    # ---------- Generate Medical Report ----------
 
-    with st.spinner("Extracting key information..."):
-        doc = nlp(transcription)
+    st.subheader("Generated Medical Report")
 
-        symptoms = [ent.text for ent in doc.ents if ent.label_ == "SYMPTOM"]
-        diseases = [ent.text for ent in doc.ents if ent.label_ == "DISEASE"]
-        medications = [ent.text for ent in doc.ents if ent.label_ == "DRUG"]
+    prompt = f"""
+    You are a medical scribe. Based on the following consultation transcription:
 
-    st.subheader("Extracted Information")
-    st.write("**Symptoms:**", symptoms)
-    st.write("**Diseases:**", diseases)
-    st.write("**Medications:**", medications)
+    {transcription}
 
-    # ---------- LLM Summary ----------
+    Generate a structured medical report with sections:
+    - Chief Complaint
+    - History of Present Illness
+    - Past Medical History
+    - Medications
+    - Physical Examination
+    - Assessment and Plan
+    """
 
-    with st.spinner("Generating summary..."):
-        message = HumanMessage(content=f"Summarize the following patient consultation: {transcription}")
-        summary = llm([message]).content
+    with st.spinner("Generating Report..."):
+        response = llm([HumanMessage(content=prompt)])
+        report = response.content
 
-    st.subheader("Consultation Summary")
-    st.write(summary)
+    st.write(report)
 
-    # ---------- Report Export ----------
+    # ---------- Download Report ----------
 
-    export_format = st.selectbox("Export Report As", ["PDF", "Word (.docx)"])
+    st.subheader("Download Report")
 
-    if st.button("Download Report"):
-        if export_format == "PDF":
-            pdf = FPDF()
-            pdf.add_page()
-            pdf.set_font("Arial", size=12)
-            pdf.multi_cell(0, 10, summary)
-            pdf_path = os.path.join(tempfile.gettempdir(), "report.pdf")
-            pdf.output(pdf_path)
-            with open(pdf_path, "rb") as f:
-                st.download_button("Download PDF", f, file_name="patient_report.pdf")
-        else:
-            docx = Document()
-            docx.add_heading("Patient Consultation Summary", 0)
-            docx.add_paragraph(summary)
-            docx_path = os.path.join(tempfile.gettempdir(), "report.docx")
-            docx.save(docx_path)
-            with open(docx_path, "rb") as f:
-                st.download_button("Download Word Document", f, file_name="patient_report.docx")
+    def save_as_docx(text, filename):
+        doc = Document()
+        for line in text.split('\n'):
+            doc.add_paragraph(line)
+        doc.save(filename)
+
+    def save_as_pdf(text, filename):
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.set_font("Arial", size=12)
+        for line in text.split('\n'):
+            pdf.multi_cell(0, 10, line)
+        pdf.output(filename)
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("Download as DOCX"):
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp_docx:
+                save_as_docx(report, tmp_docx.name)
+                with open(tmp_docx.name, "rb") as f:
+                    st.download_button(
+                        label="Download DOCX",
+                        data=f,
+                        file_name="medical_report.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
+
+    with col2:
+        if st.button("Download as PDF"):
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
+                save_as_pdf(report, tmp_pdf.name)
+                with open(tmp_pdf.name, "rb") as f:
+                    st.download_button(
+                        label="Download PDF",
+                        data=f,
+                        file_name="medical_report.pdf",
+                        mime="application/pdf",
+                    )
