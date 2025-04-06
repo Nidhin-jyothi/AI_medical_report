@@ -9,7 +9,6 @@ spacy==3.6.1
 thinc==8.1.10
 langchain
 langchain-google-genai
-replicate
 openai-whisper
 ffmpeg
 numpy==1.24.4

@@ -11,7 +11,7 @@ This project is an AI-driven medical documentation system that transcribes docto
 - **Downloadable Reports**: Exports medical reports as **PDF** or **DOCX**.
 
 ## Requirements
-- Python 3.11+
+- Python 3.10
 - PyTorch
 - OpenAI Whisper
 - SciSpaCy (`en_core_sci_md` model)
