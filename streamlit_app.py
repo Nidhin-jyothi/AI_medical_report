@@ -4,36 +4,49 @@ import whisper
 import spacy
 import os
 import datetime
+import subprocess
+import sys
 from tempfile import NamedTemporaryFile
+from io import BytesIO
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.schema import HumanMessage
 from fpdf import FPDF
 from docx import Document
-import subprocess
-import sys
 
-@st.cache_resource
-subprocess.run([sys.executable, "-m", "spacy", "download", "en_core_sci_md"])
+# --- Mandatory Initial Checks ---
+def download_spacy_model():
+    subprocess.run([sys.executable, "-m", "spacy", "download", "en_core_sci_md"])
 
-# ---------- Caching models ----------
+# Check for SpaCy medical model
+if not spacy.util.is_package("en_core_sci_md"):
+    with st.spinner("Downloading medical language model..."):
+        download_spacy_model()
 
+# Verify FFmpeg exists
+try:
+    subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
+except Exception as e:
+    st.error(f"FFmpeg not installed! Required for audio processing. Error: {str(e)}")
+    st.stop()
+
+# --- Cached Resources ---
 @st.cache_resource
 def load_whisper_model():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    return whisper.load_model("small", device=device)  # small or tiny
+    return whisper.load_model("small", device=device)
 
-@st.cache_resource
+@st.cache_resource 
 def load_spacy_model():
     return spacy.load("en_core_sci_md")
 
 @st.cache_resource
 def load_llm():
+    if "GOOGLE_API_KEY" not in st.secrets:
+        st.error("Missing Google API key in secrets!")
+        st.stop()
     return ChatGoogleGenerativeAI(model="gemini-1.5-flash")
 
-# ---------- Load models ----------
-
-os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
-
+# --- App Initialization ---
 whisper_model = load_whisper_model()
 nlp = load_spacy_model()
 llm = load_llm()
