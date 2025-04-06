@@ -9,6 +9,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.schema import HumanMessage
 from fpdf import FPDF
 from docx import Document
+import subprocess
 import sys
 subprocess.run([sys.executable, "-m", "spacy", "download", "en_core_sci_md"])
 
