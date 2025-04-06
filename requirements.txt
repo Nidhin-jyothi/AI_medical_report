@@ -4,7 +4,7 @@ requests
 fpdf
 python-docx
 spacy==3.6.1
-thinc==8.2.1
+thinc==8.1.10
 langchain
 langchain-google-genai
 replicate
