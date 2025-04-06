@@ -11,6 +11,8 @@ from fpdf import FPDF
 from docx import Document
 import subprocess
 import sys
+
+@st.cache_resource
 subprocess.run([sys.executable, "-m", "spacy", "download", "en_core_sci_md"])
 
 # ---------- Caching models ----------
