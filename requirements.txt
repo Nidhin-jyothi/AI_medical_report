@@ -3,6 +3,7 @@ whisper
 torch==2.1.2
 requests
 fpdf
+pydub
 python-docx
 spacy==3.6.1
 thinc==8.1.10
