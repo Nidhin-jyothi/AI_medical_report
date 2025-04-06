@@ -7,15 +7,6 @@ from langchain.schema import HumanMessage
 from fpdf import FPDF
 from docx import Document
 
-# Load SciSpaCy Model
-nlp = spacy.load("en_core_sci_md")
-
-# Set up API keys
-os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
-os.environ["REPLICATE_API_TOKEN"] = st.secrets["REPLICATE_API_TOKEN"]
-
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash")
-
 # Patient database persistence
 if "patient_db" not in st.session_state:
     st.session_state.patient_db = {}
@@ -28,6 +19,15 @@ st.write("Upload an audio file of a patient consultation to generate a structure
 st.subheader("Patient Information")
 
 pid = st.text_input("Enter Patient ID (if existing) or leave blank to register a new patient")
+
+# Load SciSpaCy Model
+nlp = spacy.load("en_core_sci_md")
+
+# Set up API keys
+os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
+os.environ["REPLICATE_API_TOKEN"] = st.secrets["REPLICATE_API_TOKEN"]
+
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash")
 
 if pid:
     if pid in patient_db:
