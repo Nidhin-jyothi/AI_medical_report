@@ -1,32 +1,40 @@
 import streamlit as st
-import requests
+import torch
+import whisper
 import spacy
 import os
+import datetime
+from tempfile import NamedTemporaryFile
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.schema import HumanMessage
 from fpdf import FPDF
 from docx import Document
 
-# Set up API keys at the top
-os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
-os.environ["REPLICATE_API_TOKEN"] = st.secrets["REPLICATE_API_TOKEN"]
+# Load SciSpaCy Model
+nlp = spacy.load("en_core_sci_md")
 
-# Load SpaCy model (cached to avoid reloading)
+# Load Whisper Model (small or tiny)
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
 @st.cache_resource
-def load_spacy_model():
-    return spacy.load("en_core_sci_md")
+def load_whisper_model():
+    return whisper.load_model("small", device=device)  # you can change "small" to "tiny" if needed
 
-nlp = load_spacy_model()
+model = load_whisper_model()
 
-# Set up LLM (Gemini)
+# Set up API Key securely from secrets
+os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
+
+# Initialize LLM
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash")
 
-# Patient database persistence
+# Persist patient database across interactions
 if "patient_db" not in st.session_state:
     st.session_state.patient_db = {}
 
 patient_db = st.session_state.patient_db
 
+# Streamlit UI
 st.title("🩺 AI-Powered Medical Documentation System")
 st.write("Upload an audio file of a patient consultation to generate a structured medical report.")
 
@@ -44,76 +52,70 @@ if pid:
         st.warning("Patient ID not found. Please register the patient below.")
         name = st.text_input("Patient Name")
         age = st.number_input("Age", min_value=0, max_value=120, step=1)
-        sex = st.radio("Sex", ["Male", "Female", "Other"])
+        sex = st.radio("Sex", ("Male", "Female", "Other"))
         if st.button("Register Patient"):
-            patient_db[pid] = {"name": name, "age": age, "sex": sex}
-            st.success(f"Patient {pid} registered!")
+            if name and age and sex:
+                patient_db[pid] = {"name": name, "age": age, "sex": sex}
+                st.success(f"Patient {pid} registered successfully!")
 
+# Upload Audio
 st.subheader("Upload Consultation Audio")
-audio_file = st.file_uploader("Upload an audio file (.wav, .mp3, etc.)", type=["wav", "mp3", "m4a"])
+audio_file = st.file_uploader("Upload an audio file (.mp3, .wav)", type=["mp3", "wav"])
 
-if audio_file:
-    # Send to Replicate's Whisper model for transcription
-    with st.spinner("Transcribing audio..."):
-        audio_bytes = audio_file.read()
+if audio_file is not None:
+    st.audio(audio_file)
+    with NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
+        tmp_file.write(audio_file.read())
+        tmp_filepath = tmp_file.name
 
-        # Send request to Replicate API (you must have set REPLICATE_API_TOKEN)
-        response = requests.post(
-            "https://api.replicate.com/v1/predictions",
-            headers={
-                "Authorization": f"Token {os.environ['REPLICATE_API_TOKEN']}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "version": "your-whisper-model-version-id-here",  # You MUST put correct Whisper model version ID
-                "input": {"audio": audio_bytes}
-            }
-        )
-        prediction = response.json()
-        if 'error' in prediction:
-            st.error(f"Error from Replicate API: {prediction['error']}")
-        else:
-            transcription = prediction["prediction"]["text"]
-            st.subheader("Transcription")
-            st.write(transcription)
+    # Transcribe audio
+    st.info("Transcribing audio... please wait ⏳")
+    result = model.transcribe(tmp_filepath)
+    transcription = result["text"]
+    
+    st.subheader("Transcribed Consultation")
+    st.write(transcription)
 
-            # Extract information using SciSpaCy
-            doc = nlp(transcription)
-            medical_entities = [ent.text for ent in doc.ents if ent.label_ in ["DISEASE", "SYMPTOM", "TREATMENT"]]
+    # Extract medical information using SciSpacy
+    doc = nlp(transcription)
+    entities = [(ent.text, ent.label_) for ent in doc.ents]
 
-            st.subheader("Extracted Medical Information")
-            st.write(medical_entities)
+    st.subheader("Extracted Medical Information")
+    for entity_text, entity_label in entities:
+        st.write(f"**{entity_label}:** {entity_text}")
 
-            # Generate structured report using LLM
-            with st.spinner("Generating Medical Report..."):
-                prompt = f"""You are a medical assistant. Create a structured medical report based on this consultation transcript:
+    # Summarize or structure report using LLM
+    st.subheader("Generate Structured Medical Report")
+    prompt = f"Generate a structured medical report based on this consultation transcription:\n{transcription}"
+    response = llm([HumanMessage(content=prompt)])
+    report = response.content
 
-{transcription}
+    st.text_area("Medical Report", value=report, height=300)
 
-Include sections like Chief Complaint, History of Present Illness, Assessment, and Plan."""
-                report = llm([HumanMessage(content=prompt)]).content
+    # Download report options
+    st.subheader("Download Report")
 
-                st.subheader("Generated Medical Report")
-                st.write(report)
+    # PDF Download
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.multi_cell(0, 10, report)
 
-                # Option to download report as PDF or DOCX
-                if st.button("Download Report as PDF"):
-                    pdf = FPDF()
-                    pdf.add_page()
-                    pdf.set_font("Arial", size=12)
-                    for line in report.split("\n"):
-                        pdf.multi_cell(0, 10, line)
-                    pdf_output = "medical_report.pdf"
-                    pdf.output(pdf_output)
-                    with open(pdf_output, "rb") as file:
-                        st.download_button("Download PDF", data=file, file_name="medical_report.pdf")
+    pdf_filename = f"medical_report_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    pdf_output = f"/tmp/{pdf_filename}"
+    pdf.output(pdf_output)
 
-                if st.button("Download Report as DOCX"):
-                    doc = Document()
-                    doc.add_heading("Medical Report", 0)
-                    for para in report.split("\n"):
-                        doc.add_paragraph(para)
-                    docx_output = "medical_report.docx"
-                    doc.save(docx_output)
-                    with open(docx_output, "rb") as file:
-                        st.download_button("Download DOCX", data=file, file_name="medical_report.docx")
+    with open(pdf_output, "rb") as f:
+        st.download_button("Download PDF", f, file_name=pdf_filename, mime="application/pdf")
+
+    # Word Download
+    docx = Document()
+    docx.add_heading('Medical Report', 0)
+    docx.add_paragraph(report)
+
+    docx_filename = f"medical_report_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+    docx_output = f"/tmp/{docx_filename}"
+    docx.save(docx_output)
+
+    with open(docx_output, "rb") as f:
+        st.download_button("Download Word Document", f, file_name=docx_filename, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
