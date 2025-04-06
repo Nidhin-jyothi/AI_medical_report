@@ -10,23 +10,31 @@ from langchain.schema import HumanMessage
 from fpdf import FPDF
 from docx import Document
 
-# Load SciSpaCy Model
-nlp = spacy.load("en_core_sci_md")
-
-# Load Whisper Model (small or tiny)
-device = "cuda" if torch.cuda.is_available() else "cpu"
+# ---------- Caching models ----------
 
 @st.cache_resource
 def load_whisper_model():
-    return whisper.load_model("small", device=device)  # you can change "small" to "tiny" if needed
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    return whisper.load_model("small", device=device)  # or "tiny" if you prefer
 
-model = load_whisper_model()
+@st.cache_resource
+def load_spacy_model():
+    return spacy.load("en_core_sci_md")
 
-# Set up API Key securely from secrets
+@st.cache_resource
+def load_llm():
+    return ChatGoogleGenerativeAI(model="gemini-1.5-flash")
+
+# ---------- Load models ----------
+
+# Load API key from secrets
 os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
 
-# Initialize LLM
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash")
+whisper_model = load_whisper_model()
+nlp = load_spacy_model()
+llm = load_llm()
+
+# ---------- Initialize Streamlit App ----------
 
 # Persist patient database across interactions
 if "patient_db" not in st.session_state:
@@ -34,9 +42,10 @@ if "patient_db" not in st.session_state:
 
 patient_db = st.session_state.patient_db
 
-# Streamlit UI
 st.title("🩺 AI-Powered Medical Documentation System")
 st.write("Upload an audio file of a patient consultation to generate a structured medical report.")
+
+# ---------- Patient Information ----------
 
 st.subheader("Patient Information")
 
@@ -54,68 +63,75 @@ if pid:
         age = st.number_input("Age", min_value=0, max_value=120, step=1)
         sex = st.radio("Sex", ("Male", "Female", "Other"))
         if st.button("Register Patient"):
-            if name and age and sex:
-                patient_db[pid] = {"name": name, "age": age, "sex": sex}
-                st.success(f"Patient {pid} registered successfully!")
+            patient_db[pid] = {"name": name, "age": age, "sex": sex}
+            st.success(f"Patient {pid} registered!")
 
-# Upload Audio
+# ---------- Upload and Transcribe Audio ----------
+
 st.subheader("Upload Consultation Audio")
+
 audio_file = st.file_uploader("Upload an audio file (.mp3, .wav)", type=["mp3", "wav"])
 
 if audio_file is not None:
-    st.audio(audio_file)
-    with NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
+    with NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
         tmp_file.write(audio_file.read())
-        tmp_filepath = tmp_file.name
+        tmp_file_path = tmp_file.name
 
-    # Transcribe audio
-    st.info("Transcribing audio... please wait ⏳")
-    result = model.transcribe(tmp_filepath)
-    transcription = result["text"]
+    st.audio(audio_file, format="audio/wav")
+
+    with st.spinner("Transcribing..."):
+        result = whisper_model.transcribe(tmp_file_path)
+        transcription = result["text"]
     
-    st.subheader("Transcribed Consultation")
+    st.subheader("Transcription")
     st.write(transcription)
 
-    # Extract medical information using SciSpacy
-    doc = nlp(transcription)
-    entities = [(ent.text, ent.label_) for ent in doc.ents]
+    # ---------- Extract medical entities ----------
+    with st.spinner("Extracting key information..."):
+        doc = nlp(transcription)
+        diagnoses = [ent.text for ent in doc.ents if ent.label_ == "DIAGNOSIS"]
+        treatments = [ent.text for ent in doc.ents if ent.label_ == "TREATMENT"]
 
-    st.subheader("Extracted Medical Information")
-    for entity_text, entity_label in entities:
-        st.write(f"**{entity_label}:** {entity_text}")
+    st.subheader("Extracted Information")
+    st.write("**Diagnoses:**", diagnoses)
+    st.write("**Treatments:**", treatments)
 
-    # Summarize or structure report using LLM
-    st.subheader("Generate Structured Medical Report")
-    prompt = f"Generate a structured medical report based on this consultation transcription:\n{transcription}"
-    response = llm([HumanMessage(content=prompt)])
-    report = response.content
+    # ---------- Generate AI Medical Report ----------
+    with st.spinner("Generating AI medical report..."):
+        user_message = f"Generate a medical report based on this consultation: {transcription}"
+        ai_response = llm([HumanMessage(content=user_message)])
+        report_text = ai_response.content
 
-    st.text_area("Medical Report", value=report, height=300)
+    st.subheader("Generated Medical Report")
+    st.write(report_text)
 
-    # Download report options
-    st.subheader("Download Report")
+    # ---------- Download options ----------
+    def save_pdf(text, filename):
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+        for line in text.split('\n'):
+            pdf.multi_cell(0, 10, line)
+        pdf.output(filename)
 
-    # PDF Download
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=12)
-    pdf.multi_cell(0, 10, report)
+    def save_docx(text, filename):
+        doc = Document()
+        for line in text.split('\n'):
+            doc.add_paragraph(line)
+        doc.save(filename)
 
-    pdf_filename = f"medical_report_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-    pdf_output = f"/tmp/{pdf_filename}"
-    pdf.output(pdf_output)
+    # Download buttons
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Download as PDF"):
+            pdf_filename = "medical_report.pdf"
+            save_pdf(report_text, pdf_filename)
+            with open(pdf_filename, "rb") as f:
+                st.download_button("Download PDF", f, file_name=pdf_filename)
 
-    with open(pdf_output, "rb") as f:
-        st.download_button("Download PDF", f, file_name=pdf_filename, mime="application/pdf")
-
-    # Word Download
-    docx = Document()
-    docx.add_heading('Medical Report', 0)
-    docx.add_paragraph(report)
-
-    docx_filename = f"medical_report_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
-    docx_output = f"/tmp/{docx_filename}"
-    docx.save(docx_output)
-
-    with open(docx_output, "rb") as f:
-        st.download_button("Download Word Document", f, file_name=docx_filename, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    with col2:
+        if st.button("Download as DOCX"):
+            docx_filename = "medical_report.docx"
+            save_docx(report_text, docx_filename)
+            with open(docx_filename, "rb") as f:
+                st.download_button("Download DOCX", f, file_name=docx_filename)
