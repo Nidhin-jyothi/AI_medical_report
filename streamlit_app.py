@@ -7,6 +7,20 @@ from langchain.schema import HumanMessage
 from fpdf import FPDF
 from docx import Document
 
+# Set up API keys
+os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
+os.environ["REPLICATE_API_TOKEN"] = st.secrets["REPLICATE_API_TOKEN"]
+
+# Load SpaCy model once
+@st.cache_resource
+def load_spacy_model():
+    return spacy.load("en_core_sci_md")
+
+nlp = load_spacy_model()
+
+# Set up LLM
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash")
+
 # Patient database persistence
 if "patient_db" not in st.session_state:
     st.session_state.patient_db = {}
@@ -19,15 +33,6 @@ st.write("Upload an audio file of a patient consultation to generate a structure
 st.subheader("Patient Information")
 
 pid = st.text_input("Enter Patient ID (if existing) or leave blank to register a new patient")
-
-# Load SciSpaCy Model
-nlp = spacy.load("en_core_sci_md")
-
-# Set up API keys
-os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
-os.environ["REPLICATE_API_TOKEN"] = st.secrets["REPLICATE_API_TOKEN"]
-
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash")
 
 if pid:
     if pid in patient_db:
@@ -45,66 +50,53 @@ if pid:
             st.success(f"Patient {pid} registered!")
 
 st.subheader("Upload Consultation Audio")
-audio_file = st.file_uploader("Upload an audio file (.mp3, .wav)", type=["mp3", "wav"])
+audio_file = st.file_uploader("Upload an audio file (.mp3, .wav)")
 
-if audio_file:
-    with st.spinner('Transcribing with Whisper...'):
-        # Send audio to Replicate's Whisper model
-        url = "https://api.replicate.com/v1/predictions"
-        headers = {
-            "Authorization": f"Token {os.environ['REPLICATE_API_TOKEN']}",
-            "Content-Type": "application/json"
-        }
-        files = {"file": audio_file}
-        upload_response = requests.post(
-            "https://dreambooth-api-experimental.replicate.com/v1/files",
-            headers=headers,
-            files={"file": (audio_file.name, audio_file, audio_file.type)}
-        )
-        file_url = upload_response.json()["url"]
+if audio_file is not None:
+    st.audio(audio_file, format='audio/wav')
 
-        body = {
-            "version": "f481705f0d682c9b2a3a99d3c9c2e46ee87d764b8713b8a6de998d0df5c04e4a",  # whisper-1
-            "input": {"audio": file_url}
-        }
-        response = requests.post(url, headers=headers, json=body)
-        prediction = response.json()
+    # Here you would normally use a transcription API or model
+    # But for now, simulate transcription
+    st.info("Transcribing audio (mockup)...")
+    transcription = "The patient complains of chest pain and shortness of breath."
 
-        transcription = prediction["prediction"]
+    st.subheader("Extracted Medical Information")
 
-        st.success("Transcription Complete!")
-        st.text_area("Transcribed Text", transcription, height=200)
+    # Extract entities using SciSpaCy
+    doc = nlp(transcription)
+    entities = [(ent.text, ent.label_) for ent in doc.ents]
 
-        # Medical entity extraction
-        doc = nlp(transcription)
-        medical_terms = [ent.text for ent in doc.ents]
+    if entities:
+        st.write("**Identified Medical Terms:**")
+        for text, label in entities:
+            st.write(f"- {text} ({label})")
+    else:
+        st.write("No medical entities found.")
 
-        st.subheader("Extracted Medical Terms")
-        st.write(medical_terms)
+    # Generate a medical report
+    st.subheader("Generated Medical Report")
+    messages = [HumanMessage(content=f"Summarize the following consultation in a medical report format:\n{transcription}")]
+    report = llm(messages).content
+    st.write(report)
 
-        # Summarization / Report generation using Gemini
-        user_prompt = f"Generate a detailed medical report based on this consultation: {transcription}"
-        response = llm([HumanMessage(content=user_prompt)])
-        final_report = response.content
+    # Allow Download
+    if st.button("Download Report as PDF"):
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+        pdf.multi_cell(0, 10, report)
+        pdf_output_path = "/tmp/medical_report.pdf"
+        pdf.output(pdf_output_path)
 
-        st.subheader("Generated Medical Report")
-        st.write(final_report)
+        with open(pdf_output_path, "rb") as f:
+            st.download_button("Download PDF", f, file_name="medical_report.pdf")
 
-        if st.button("Download Report as PDF"):
-            pdf = FPDF()
-            pdf.add_page()
-            pdf.set_font("Arial", size=12)
-            pdf.multi_cell(0, 10, final_report)
-            pdf_output = "medical_report.pdf"
-            pdf.output(pdf_output)
-            with open(pdf_output, "rb") as f:
-                st.download_button("Download PDF", f, file_name="medical_report.pdf")
+    if st.button("Download Report as DOCX"):
+        docx = Document()
+        docx.add_heading("Medical Report", 0)
+        docx.add_paragraph(report)
+        docx_output_path = "/tmp/medical_report.docx"
+        docx.save(docx_output_path)
 
-        if st.button("Download Report as Word"):
-            docx = Document()
-            docx.add_heading("Medical Report", 0)
-            docx.add_paragraph(final_report)
-            docx_output = "medical_report.docx"
-            docx.save(docx_output)
-            with open(docx_output, "rb") as f:
-                st.download_button("Download DOCX", f, file_name="medical_report.docx")
+        with open(docx_output_path, "rb") as f:
+            st.download_button("Download DOCX", f, file_name="medical_report.docx")
